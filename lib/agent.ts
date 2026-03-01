@@ -1,10 +1,10 @@
-import type { Sandbox } from "@vercel/sandbox";
-import type { StopCondition, ToolSet } from "ai";
-import { ToolLoopAgent, stepCountIs, tool } from "ai";
-import { createBashTool } from "bash-tool";
+import { Sandbox } from "@vercel/sandbox";
+import { DurableAgent } from "@workflow/ai/agent";
+import { tool } from "ai";
 import { z } from "zod";
 
 import { bot } from "@/lib/bot";
+import { parseError } from "@/lib/error";
 
 const instructions = `You are an expert software engineering assistant working inside a sandbox with a git repository checked out on a PR branch.
 
@@ -61,17 +61,99 @@ Based on the user's request, decide what to do. Your capabilities include:
 {{DIFF}}
 \`\`\``;
 
-const MAX_TOOL_RESULT_LENGTH = 10_000;
-const MAX_TOTAL_TOKENS = 200_000;
+const SANDBOX_CWD = "./workspace";
 
-const budgetExceeded: StopCondition<ToolSet> = ({ steps }) => {
-  const totalTokens = steps.reduce((sum, step) => {
-    return (
-      sum + (step.usage.inputTokens ?? 0) + (step.usage.outputTokens ?? 0)
-    );
-  }, 0);
-  return totalTokens > MAX_TOTAL_TOKENS;
+const getSandbox = async (sandboxId: string) => {
+  const sandbox = await Sandbox.get({ sandboxId }).catch((error: unknown) => {
+    throw new Error(`Failed to re-acquire sandbox: ${parseError(error)}`, {
+      cause: error,
+    });
+  });
+
+  return sandbox;
 };
+
+const createBashTool = (sandboxId: string) =>
+  tool({
+    description: [
+      "Execute bash commands in the sandbox environment.",
+      "",
+      `WORKING DIRECTORY: ${SANDBOX_CWD}`,
+      "All commands execute from this directory. Use relative paths from here.",
+      "",
+      "Common operations:",
+      "  ls -la              # List files with details",
+      "  find . -name '*.ts' # Find files by pattern",
+      "  grep -r 'pattern' . # Search file contents",
+      "  cat <file>          # View file contents",
+    ].join("\n"),
+    execute: async ({ command }) => {
+      "use step";
+
+      const sandbox = await getSandbox(sandboxId);
+      const fullCommand = `cd "${SANDBOX_CWD}" && ${command}`;
+      const result = await sandbox.runCommand("bash", ["-c", fullCommand]);
+      const [stdout, stderr] = await Promise.all([
+        result.stdout(),
+        result.stderr(),
+      ]);
+
+      return { exitCode: result.exitCode, stderr, stdout };
+    },
+    inputSchema: z.object({
+      command: z.string().describe("The bash command to execute"),
+    }),
+  });
+
+const createReadFileTool = (sandboxId: string) =>
+  tool({
+    description: "Read the contents of a file from the sandbox.",
+    execute: async ({ path }) => {
+      "use step";
+
+      const sandbox = await getSandbox(sandboxId);
+      const resolvedPath = path.startsWith("/")
+        ? path
+        : `${SANDBOX_CWD}/${path}`;
+
+      const buffer = await sandbox.readFileToBuffer({ path: resolvedPath });
+
+      if (buffer === null) {
+        throw new Error(`File not found: ${resolvedPath}`);
+      }
+
+      const content = buffer.toString("utf8");
+
+      return { content };
+    },
+    inputSchema: z.object({
+      path: z.string().describe("The path to the file to read"),
+    }),
+  });
+
+const createWriteFileTool = (sandboxId: string) =>
+  tool({
+    description:
+      "Write content to a file in the sandbox. Creates parent directories if needed.",
+    execute: async ({ content, path }) => {
+      "use step";
+
+      const sandbox = await getSandbox(sandboxId);
+      const resolvedPath = path.startsWith("/")
+        ? path
+        : `${SANDBOX_CWD}/${path}`;
+
+      await sandbox.writeFiles([
+        { content: Buffer.from(content), path: resolvedPath },
+      ]);
+
+      return { success: true };
+    },
+    inputSchema: z.object({
+      content: z.string().describe("The content to write to the file"),
+      path: z.string().describe("The path where the file should be written"),
+    }),
+  });
 
 const createReplyTool = (threadId: string) => {
   const adapter = bot.getAdapter("github");
@@ -80,6 +162,8 @@ const createReplyTool = (threadId: string) => {
     description:
       "Post a comment on the pull request. Use this to share your findings, ask questions, or report results.",
     execute: async ({ body }) => {
+      "use step";
+
       await adapter.postMessage(threadId, { markdown: body });
       return { success: true };
     },
@@ -89,61 +173,23 @@ const createReplyTool = (threadId: string) => {
   });
 };
 
-export const createAgent = async (
-  sandbox: Sandbox,
+export const createAgent = (
+  sandboxId: string,
   threadId: string,
   diff: string,
   prNumber: number,
   repoFullName: string
-) => {
-  const { tools: bashTools } = await createBashTool({ sandbox });
-
-  return new ToolLoopAgent({
-    experimental_onToolCallFinish: ({ toolCall, durationMs, success }) => {
-      const status = success ? "ok" : "error";
-      console.log(
-        `[agent] tool ${toolCall.toolName} ${status} (${durationMs}ms)`
-      );
-    },
-    instructions: instructions
+) =>
+  new DurableAgent({
+    model: "anthropic/claude-sonnet-4.6",
+    system: instructions
       .replaceAll("{{PR_NUMBER}}", String(prNumber))
       .replaceAll("{{REPO}}", repoFullName)
       .replace("{{DIFF}}", diff),
-    model: "anthropic/claude-sonnet-4.6",
-    onStepFinish: ({ stepNumber, usage }) => {
-      console.log(
-        `[agent] step ${stepNumber}: ${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out`
-      );
-    },
-    prepareStep: ({ messages }) => {
-      const trimmed = messages.map((msg) => {
-        if (msg.role !== "tool" || !Array.isArray(msg.content)) {
-          return msg;
-        }
-
-        return {
-          ...msg,
-          content: msg.content.map((part) => {
-            const text = JSON.stringify(part.result);
-
-            if (text.length <= MAX_TOOL_RESULT_LENGTH) {
-              return part;
-            }
-
-            return {
-              ...part,
-              result: `${text.slice(0, MAX_TOOL_RESULT_LENGTH)}\n\n... (truncated ${text.length - MAX_TOOL_RESULT_LENGTH} chars)`,
-            };
-          }),
-        };
-      });
-
-      return { messages: trimmed };
-    },
-    stopWhen: [stepCountIs(20), budgetExceeded],
     tools: {
-      ...bashTools,
+      bash: createBashTool(sandboxId),
+      readFile: createReadFileTool(sandboxId),
       reply: createReplyTool(threadId),
+      writeFile: createWriteFileTool(sandboxId),
     },
   });
-};

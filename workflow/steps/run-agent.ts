@@ -1,4 +1,5 @@
-import { Sandbox } from "@vercel/sandbox";
+import type { UIMessageChunk } from "ai";
+import { getWritable } from "workflow";
 
 import { createAgent } from "@/lib/agent";
 import { bot } from "@/lib/bot";
@@ -18,31 +19,74 @@ export const runAgent = async (
   prNumber: number,
   repoFullName: string
 ): Promise<AgentResult> => {
-  "use step";
-
-  const sandbox = await Sandbox.get({ sandboxId }).catch((error: unknown) => {
-    throw new Error(`[runAgent] Failed to get sandbox: ${parseError(error)}`, {
-      cause: error,
-    });
-  });
-
   try {
     const adapter = bot.getAdapter("github");
     await adapter.startTyping(threadId, "Reviewing...");
 
-    const agent = await createAgent(
-      sandbox,
+    const agent = createAgent(
+      sandboxId,
       threadId,
       diff,
       prNumber,
       repoFullName
     );
 
-    await agent.generate({
+    await agent.stream({
+      maxSteps: 20,
       messages: threadMessages.map((msg) => ({
         content: msg.content,
         role: msg.role,
       })),
+      onStepFinish: (step) => {
+        console.log(
+          `[agent] step: ${step.usage.inputTokens ?? 0} in / ${step.usage.outputTokens ?? 0} out`
+        );
+      },
+      prepareStep: ({ messages }) => {
+        const trimmed = messages.map((msg) => {
+          if (msg.role !== "tool" || !Array.isArray(msg.content)) {
+            return msg;
+          }
+
+          return {
+            ...msg,
+            content: msg.content.map((part) => {
+              if (part.type !== "tool-result") {
+                return part;
+              }
+
+              const text = JSON.stringify(part.output);
+
+              if (text.length <= 10_000) {
+                return part;
+              }
+
+              return {
+                ...part,
+                output: {
+                  type: "text" as const,
+                  value: `${text.slice(0, 10_000)}\n\n... (truncated ${text.length - 10_000} chars)`,
+                },
+              };
+            }),
+          };
+        });
+
+        return { messages: trimmed };
+      },
+      stopWhen: [
+        ({ steps }) => {
+          let totalTokens = 0;
+
+          for (const step of steps) {
+            totalTokens +=
+              (step.usage.inputTokens ?? 0) + (step.usage.outputTokens ?? 0);
+          }
+
+          return totalTokens > 200_000;
+        },
+      ],
+      writable: getWritable<UIMessageChunk>(),
     });
 
     return { success: true };
