@@ -52,7 +52,7 @@ Based on the user's request, decide what to do. Your capabilities include:
 - Always reply at least once with your findings or actions taken
 - Format replies as markdown
 - Be concise and actionable
-- End every reply with a line break, a horizontal rule, then: *Powered by [OpenReview](https://github.com/haydenbleasel/openreview)*
+- End every reply with a line break, a horizontal rule, then: *Powered by [OpenReview](https://github.com/vercel-labs/openreview)*
 
 ## PR Diff for Reference
 

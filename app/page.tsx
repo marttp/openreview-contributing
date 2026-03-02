@@ -102,7 +102,7 @@ const Page = () => (
           <DeployButton />
           <a
             className="inline-flex h-10 items-center justify-center rounded-lg border border-zinc-200 px-4 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            href="https://github.com/haydenbleasel/openreview"
+            href="https://github.com/vercel-labs/openreview"
             rel="noopener noreferrer"
             target="_blank"
           >

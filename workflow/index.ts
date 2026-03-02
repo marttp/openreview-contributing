@@ -47,7 +47,7 @@ Unable to access this branch: ${pushAccess.reason}
 Please ensure the OpenReview app has access to this repository and branch.
 
 ---
-*Powered by [OpenReview](https://github.com/haydenbleasel/openreview)*`
+*Powered by [OpenReview](https://github.com/vercel-labs/openreview)*`
     );
 
     throw new FatalError(pushAccess.reason ?? "Push access denied");
@@ -93,7 +93,7 @@ ${parseError(error)}
 \`\`\`
 
 ---
-*Powered by [OpenReview](https://github.com/haydenbleasel/openreview)*`
+*Powered by [OpenReview](https://github.com/vercel-labs/openreview)*`
       );
     } catch {
       // Ignore comment failure
