@@ -1,17 +1,16 @@
 import { after, NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { bot } from "@/lib/bot";
+import { getBot } from "@/lib/bot";
 
-export const POST = (request: NextRequest): Promise<NextResponse> => {
+export const POST = async (request: NextRequest): Promise<NextResponse> => {
+  const bot = await getBot();
   const handler = bot.webhooks.github;
 
   if (!handler) {
-    return Promise.resolve(
-      NextResponse.json(
-        { error: "GitHub adapter not configured" },
-        { status: 404 }
-      )
+    return NextResponse.json(
+      { error: "GitHub adapter not configured" },
+      { status: 404 }
     );
   }
 

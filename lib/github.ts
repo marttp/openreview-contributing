@@ -8,6 +8,14 @@ let app: App | null = null;
 
 export const getGitHubApp = (): App => {
   if (!app) {
+    if (
+      !env.GITHUB_APP_ID ||
+      !env.GITHUB_APP_PRIVATE_KEY ||
+      !env.GITHUB_APP_WEBHOOK_SECRET
+    ) {
+      throw new Error("Missing required GitHub App environment variables");
+    }
+
     app = new App({
       appId: env.GITHUB_APP_ID,
       privateKey: env.GITHUB_APP_PRIVATE_KEY.replaceAll("\\n", "\n"),
@@ -20,6 +28,10 @@ export const getGitHubApp = (): App => {
 };
 
 export const getInstallationOctokit = (): Promise<Octokit> => {
+  if (!env.GITHUB_APP_INSTALLATION_ID) {
+    throw new Error("Missing GITHUB_APP_INSTALLATION_ID environment variable");
+  }
+
   const githubApp = getGitHubApp();
   return githubApp.getInstallationOctokit(env.GITHUB_APP_INSTALLATION_ID);
 };

@@ -39,23 +39,89 @@ const state = env.REDIS_URL
   ? createRedisState({ url: env.REDIS_URL })
   : createMemoryState();
 
-const appInfo = await getAppInfo();
+let botInstance: Chat | null = null;
 
-export const bot = new Chat({
-  adapters: {
-    github: createGitHubAdapter({
-      appId: env.GITHUB_APP_ID,
-      botUserId: appInfo.botUserId,
-      installationId: env.GITHUB_APP_INSTALLATION_ID,
-      privateKey: env.GITHUB_APP_PRIVATE_KEY.replaceAll("\\n", "\n"),
-      userName: appInfo.slug,
-      webhookSecret: env.GITHUB_APP_WEBHOOK_SECRET,
-    }),
-  },
-  logger: "debug",
-  state,
-  userName: appInfo.slug,
-});
+const initBot = async (): Promise<Chat> => {
+  if (botInstance) {
+    return botInstance;
+  }
+
+  if (
+    !env.GITHUB_APP_ID ||
+    !env.GITHUB_APP_INSTALLATION_ID ||
+    !env.GITHUB_APP_PRIVATE_KEY ||
+    !env.GITHUB_APP_WEBHOOK_SECRET
+  ) {
+    throw new Error("Missing required GitHub App environment variables");
+  }
+
+  const appInfo = await getAppInfo();
+
+  botInstance = new Chat({
+    adapters: {
+      github: createGitHubAdapter({
+        appId: env.GITHUB_APP_ID,
+        botUserId: appInfo.botUserId,
+        installationId: env.GITHUB_APP_INSTALLATION_ID,
+        privateKey: env.GITHUB_APP_PRIVATE_KEY.replaceAll("\\n", "\n"),
+        userName: appInfo.slug,
+        webhookSecret: env.GITHUB_APP_WEBHOOK_SECRET,
+      }),
+    },
+    logger: "debug",
+    state,
+    userName: appInfo.slug,
+  });
+
+  botInstance.onNewMention(handleMention);
+
+  botInstance.onSubscribedMessage(async (thread, message) => {
+    if (!message.isMention) {
+      return;
+    }
+
+    await handleMention(thread, message);
+  });
+
+  botInstance.onReaction([emoji.thumbs_up, emoji.heart], async (event) => {
+    if (!event.added || !event.message?.author.isMe) {
+      return;
+    }
+
+    const threadState = (await event.thread.state) as ThreadState | null;
+
+    if (!threadState) {
+      return;
+    }
+
+    const messages = await collectMessages(event.thread);
+
+    await start(botWorkflow, [
+      {
+        ...threadState,
+        messages,
+        threadId: event.thread.id,
+      } satisfies WorkflowParams,
+    ]);
+  });
+
+  botInstance.onReaction(
+    [emoji.thumbs_down, emoji.confused],
+    async (event) => {
+      if (!event.added || !event.message?.author.isMe) {
+        return;
+      }
+
+      await event.thread.post(
+        `${emoji.eyes} Got it, skipping that. Mention me with feedback if you'd like a different approach.`
+      );
+    }
+  );
+
+  return botInstance;
+};
+
+export const getBot = (): Promise<Chat> => initBot();
 
 const handleMention = async (thread: Thread, message: Message) => {
   await thread.adapter.addReaction(thread.id, message.id, emoji.eyes);
@@ -94,46 +160,3 @@ const handleMention = async (thread: Thread, message: Message) => {
   ]);
 };
 
-bot.onNewMention(handleMention);
-
-bot.onSubscribedMessage(async (thread, message) => {
-  if (!message.isMention) {
-    return;
-  }
-
-  await handleMention(thread, message);
-});
-
-// Thumbs up on a bot message → treat its text as an approved instruction
-bot.onReaction([emoji.thumbs_up, emoji.heart], async (event) => {
-  if (!event.added || !event.message?.author.isMe) {
-    return;
-  }
-
-  const threadState = (await event.thread.state) as ThreadState | null;
-
-  if (!threadState) {
-    return;
-  }
-
-  const messages = await collectMessages(event.thread);
-
-  await start(botWorkflow, [
-    {
-      ...threadState,
-      messages,
-      threadId: event.thread.id,
-    } satisfies WorkflowParams,
-  ]);
-});
-
-// Thumbs down on a bot message → acknowledge and skip
-bot.onReaction([emoji.thumbs_down, emoji.confused], async (event) => {
-  if (!event.added || !event.message?.author.isMe) {
-    return;
-  }
-
-  await event.thread.post(
-    `${emoji.eyes} Got it, skipping that. Mention me with feedback if you'd like a different approach.`
-  );
-});
