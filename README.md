@@ -19,6 +19,43 @@ An open-source, self-hosted AI code review bot. Deploy to Vercel, connect a GitH
 
 ## How it works
 
+```mermaid
+sequenceDiagram
+    participant U as Developer
+    participant GH as GitHub
+    participant WH as Webhook Handler
+    participant WF as Vercel Workflow
+    participant SB as Vercel Sandbox
+    participant AI as Claude Agent
+
+    U->>GH: @openreview in PR comment
+    GH->>WH: Webhook event
+    WH->>WF: Start workflow
+
+    WF->>GH: Check push access
+    WF->>SB: Create sandbox
+    SB->>SB: Clone repo on PR branch
+    SB->>SB: Install dependencies
+    SB->>SB: Configure git
+
+    WF->>AI: Run agent with PR context
+    AI->>SB: Read files, run linters, explore code
+    SB-->>AI: Command output
+    AI->>GH: Post inline comments & suggestions
+    AI-->>WF: Agent complete
+
+    WF->>SB: Check for uncommitted changes
+    alt Changes made
+        WF->>SB: Commit & push to PR branch
+        SB->>GH: Push changes
+    end
+    WF->>SB: Stop sandbox
+
+    U->>GH: React 👍 or ❤️ on suggestion
+    GH->>WH: Reaction event
+    WH->>WF: Start new workflow run
+```
+
 1. Mention `@openreview` in a PR comment (optionally with specific instructions)
 2. OpenReview spins up a sandboxed environment and clones the repo on the PR branch
 3. A Claude-powered agent reviews the diff, explores the codebase, and runs project tooling
